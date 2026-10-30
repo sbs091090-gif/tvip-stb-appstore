@@ -1,0 +1,33 @@
+name: Container tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare local test credentials
+        run: |
+          umask 077
+          { printf 'POSTGRES_PASSWORD='; openssl rand -hex 24; printf 'DJANGO_SECRET_KEY='; openssl rand -hex 32; } > .env
+      - name: Build and start PostgreSQL
+        run: |
+          docker compose build web
+          docker compose up -d --wait db
+      - name: Fetch verified APK fixture
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/androguard/androguard/v4.1.3/tests/data/APK/hello-world.apk -o /tmp/tvip-test.apk
+          chmod 644 /tmp/tvip-test.apk
+          printf '%s\n' 'f427a0ebe0bca97b9acf6cd2a2a01c37a7d3762841810fc54a7191ec637330b2  /tmp/tvip-test.apk' | sha256sum -c -
+      - name: Test inside Docker
+        run: |
+          docker compose run --rm -e APK_FIXTURE=/tmp/test.apk -v /tmp/tvip-test.apk:/tmp/test.apk:ro web python manage.py test tests --verbosity 2
+          docker compose run --rm web python manage.py makemigrations --check --dry-run
+          docker compose run --rm web python manage.py migrate --noinput
+          docker compose run --rm web python manage.py collectstatic --noinput
+          docker compose up -d --wait web nginx
+          docker compose exec -T web python -m tests.smoke
+      - name: Cleanup isolated CI services
+        if: always()
+        run: docker compose down -v
